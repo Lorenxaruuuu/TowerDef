@@ -11,7 +11,8 @@ import {
   Heart, 
   Play, 
   Pause, 
-  RotateCcw, 
+  RotateCcw,
+  RotateCw, 
   ChevronRight,
   Crosshair,
   Zap,
@@ -37,6 +38,49 @@ import {
 } from './constants';
 
 export default function App() {
+  const [rotation, setRotation] = useState(0); // in degrees
+  
+  // IsometricProjection Helpers
+  const toIso = useCallback((x: number, y: number) => {
+    const scale = 0.6; 
+    const angleRad = (rotation * Math.PI) / 180;
+    
+    // Rotate relative to map center
+    const cx = CANVAS_WIDTH / 2;
+    const cy = CANVAS_HEIGHT / 2;
+    const dx = x - cx;
+    const dy = y - cy;
+    
+    const rx = dx * Math.cos(angleRad) - dy * Math.sin(angleRad);
+    const ry = dx * Math.sin(angleRad) + dy * Math.cos(angleRad);
+    
+    const isoX = (rx - ry) * scale + CANVAS_WIDTH / 2;
+    const isoY = (rx + ry) * scale * 0.5 + CANVAS_HEIGHT / 2.5;
+    return { x: isoX, y: isoY };
+  }, [rotation]);
+
+  const fromIso = useCallback((isoX: number, isoY: number) => {
+    const scale = 0.6;
+    const angleRad = (rotation * Math.PI) / 180;
+    
+    const shiftedX = isoX - CANVAS_WIDTH / 2;
+    const shiftedY = isoY - CANVAS_HEIGHT / 2.5;
+    
+    // Inverse isometric projection to get rotated coordinates
+    const rx = (shiftedX + 2 * shiftedY) / (2 * scale);
+    const ry = (2 * shiftedY - shiftedX) / (2 * scale);
+    
+    // Inverse rotation to get original coordinates
+    const invAngleRad = -angleRad;
+    const cx = CANVAS_WIDTH / 2;
+    const cy = CANVAS_HEIGHT / 2;
+    
+    const x = cx + rx * Math.cos(invAngleRad) - ry * Math.sin(invAngleRad);
+    const y = cy + rx * Math.sin(invAngleRad) + ry * Math.cos(invAngleRad);
+    
+    return { x, y };
+  }, [rotation]);
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [gameState, setGameState] = useState<GameState>({
     money: 200,
@@ -58,6 +102,9 @@ export default function App() {
   const [selectedTowerId, setSelectedTowerId] = useState<string | null>(null);
   const [isPaused, setIsPaused] = useState(false);
   const [showRoundCleared, setShowRoundCleared] = useState(false);
+  const [isRotating, setIsRotating] = useState(false);
+  const [didRotate, setDidRotate] = useState(false);
+  const [lastMousePos, setLastMousePos] = useState<Point | null>(null);
   const [nextRoundCountdown, setNextRoundCountdown] = useState<number | null>(null);
   const [mousePos, setMousePos] = useState<Point | null>(null);
 
@@ -95,6 +142,17 @@ export default function App() {
   }, [PATH]);
 
   const PATH_LENGTH = useMemo(() => getPathLength(), [getPathLength]);
+
+  useEffect(() => {
+    const handleGlobalMouseUp = () => {
+      setIsRotating(false);
+      setLastMousePos(null);
+      // Reset didRotate after a short delay so the click event can see it
+      setTimeout(() => setDidRotate(false), 50);
+    };
+    window.addEventListener('mouseup', handleGlobalMouseUp);
+    return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
+  }, []);
 
   const gameStateRef = useRef<GameState>(gameState);
   gameStateRef.current = gameState;
@@ -407,297 +465,465 @@ export default function App() {
     // Clear
     ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-    // Draw Space Background (Stars)
+    // Draw Space Background (Stars) - Flat version
     ctx.save();
     const seed = gameState.mapId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    for (let i = 0; i < 150; i++) {
+    for (let i = 0; i < 80; i++) {
       const x = ((Math.abs(Math.sin(i * 12345.67 + seed))) * 1000) % CANVAS_WIDTH;
       const y = ((Math.abs(Math.cos(i * 54321.09 + seed))) * 1000) % CANVAS_HEIGHT;
-      const size = (i % 3) + 1;
-      const opacity = 0.1 + (Math.abs(Math.sin(Date.now() / 1000 + i)) * 0.4);
-      ctx.fillStyle = i % 10 === 0 ? '#60a5fa' : i % 15 === 0 ? '#f87171' : '#ffffff';
-      ctx.globalAlpha = opacity;
+      const size = (i % 2) + 1;
+      ctx.fillStyle = i % 10 === 0 ? '#334155' : '#1e293b';
       ctx.beginPath();
       ctx.arc(x, y, size, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();
 
-    // Draw Grid (Subtle)
+    // Draw Grid (Isometric)
     ctx.strokeStyle = '#2d2d2d';
     ctx.lineWidth = 0.5;
-    for (let x = 0; x <= CANVAS_WIDTH; x += 40) {
+    for (let x = 0; x <= CANVAS_WIDTH; x += 50) {
+      const p1 = toIso(x, 0);
+      const p2 = toIso(x, CANVAS_HEIGHT);
       ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, CANVAS_HEIGHT);
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
       ctx.stroke();
     }
-    for (let y = 0; y <= CANVAS_HEIGHT; y += 40) {
+    for (let y = 0; y <= CANVAS_HEIGHT; y += 50) {
+      const p1 = toIso(0, y);
+      const p2 = toIso(CANVAS_WIDTH, y);
       ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(CANVAS_WIDTH, y);
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
       ctx.stroke();
     }
 
-    // Draw Path
-    ctx.strokeStyle = '#1e293b';
-    ctx.lineWidth = 50;
+    // Draw Path - Isometric
+    ctx.strokeStyle = '#334155';
+    ctx.lineWidth = 40;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.beginPath();
-    ctx.moveTo(PATH[0].x, PATH[0].y);
-    PATH.forEach(p => ctx.lineTo(p.x, p.y));
+    const startIso = toIso(PATH[0].x, PATH[0].y);
+    ctx.moveTo(startIso.x, startIso.y);
+    PATH.forEach(p => {
+      const iso = toIso(p.x, p.y);
+      ctx.lineTo(iso.x, iso.y);
+    });
     ctx.stroke();
 
-    ctx.strokeStyle = '#334155';
-    ctx.lineWidth = 44;
+    ctx.strokeStyle = '#1e293b';
+    ctx.lineWidth = 32;
     ctx.stroke();
 
-    ctx.strokeStyle = '#475569';
-    ctx.lineWidth = 38;
-    ctx.stroke();
-
-    // Draw Map Landmarks (Spawn and Nexus)
-    const startNode = PATH[0];
-    const endNode = PATH[PATH.length - 1];
+    // Draw Map Landmarks
+    const startNodeIso = toIso(PATH[0].x, PATH[0].y);
+    const endNodeIso = toIso(PATH[PATH.length - 1].x, PATH[PATH.length - 1].y);
 
     // Spawn Portal
     ctx.save();
-    ctx.shadowBlur = 15;
-    ctx.shadowColor = '#3b82f6';
-    ctx.fillStyle = '#0f172a';
+    ctx.fillStyle = '#1e293b';
     ctx.strokeStyle = '#3b82f6';
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.arc(startNode.x, startNode.y, 25, 0, Math.PI * 2);
+    ctx.ellipse(startNodeIso.x, startNodeIso.y, 25, 12, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.stroke();
-    
-    // Spinning ring
-    ctx.beginPath();
-    ctx.setLineDash([10, 5]);
-    ctx.arc(startNode.x, startNode.y, 32 + Math.sin(Date.now() / 200) * 3, (Date.now() / 500), (Date.now() / 500) + Math.PI * 2);
     ctx.stroke();
     ctx.restore();
 
     // Nexus
     ctx.save();
-    ctx.shadowBlur = 20;
-    ctx.shadowColor = '#ef4444';
-    ctx.fillStyle = '#0f172a';
+    ctx.fillStyle = '#1e293b';
     ctx.strokeStyle = '#ef4444';
-    ctx.lineWidth = 4;
+    ctx.lineWidth = 3;
     ctx.beginPath();
-    const nexusSize = 30 + Math.sin(Date.now() / 300) * 2;
+    const nSize = 30;
     for (let i = 0; i < 6; i++) {
       const angle = (i * Math.PI) / 3;
-      const x = endNode.x + nexusSize * Math.cos(angle);
-      const y = endNode.y + nexusSize * Math.sin(angle);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+      const xOffset = nSize * Math.cos(angle);
+      const yOffset = nSize * Math.sin(angle) * 0.5;
+      if (i === 0) ctx.moveTo(endNodeIso.x + xOffset, endNodeIso.y + yOffset);
+      else ctx.lineTo(endNodeIso.x + xOffset, endNodeIso.y + yOffset);
     }
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
-    
-    // Core glow
-    ctx.fillStyle = '#ef4444';
-    ctx.shadowBlur = 10;
-    ctx.beginPath();
-    ctx.arc(endNode.x, endNode.y, 10 + Math.sin(Date.now() / 150) * 3, 0, Math.PI * 2);
-    ctx.fill();
     ctx.restore();
 
-    // Draw Laser Beams
+    // Draw Attack Effects (Beams, Lightning)
     gameState.towers.forEach(tower => {
-      if (tower.type === 'laser' && tower.targetIds && tower.targetIds.length > 0) {
+      if (tower.targetIds && tower.targetIds.length > 0) {
+        const towerIso = toIso(tower.x, tower.y);
         tower.targetIds.forEach(id => {
           const target = gameState.enemies.find(e => e.id === id);
-          if (target) {
+          if (!target) return;
+          const targetIso = toIso(target.x, target.y);
+          
+          if (tower.type === 'laser') {
+            ctx.save();
             ctx.strokeStyle = '#c084fc';
-            ctx.lineWidth = 3 + Math.sin(Date.now() / 50) * 2;
+            ctx.lineWidth = 3;
+            // Laser comes from the top crystal
             ctx.beginPath();
-            ctx.moveTo(tower.x, tower.y);
-            ctx.lineTo(target.x, target.y);
+            ctx.moveTo(towerIso.x, towerIso.y - 40); 
+            ctx.lineTo(targetIso.x, targetIso.y - 10);
             ctx.stroke();
             
-            // Glow
-            ctx.shadowBlur = 15;
-            ctx.shadowColor = '#c084fc';
+            // Inner core
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1;
             ctx.stroke();
-            ctx.shadowBlur = 0;
+            ctx.restore();
+          } else if (tower.type === 'frost') {
+            ctx.save();
+            ctx.strokeStyle = '#60a5fa';
+            ctx.lineWidth = 2;
+            // Frost beam from floating core
+            const hover = Math.sin(Date.now() / 300) * 5;
+            ctx.beginPath();
+            ctx.moveTo(towerIso.x, towerIso.y - 50 + hover);
+            ctx.lineTo(targetIso.x, targetIso.y - 10);
+            ctx.stroke();
+            
+            // Add some "snow" particles along the beam
+            ctx.fillStyle = '#ffffff';
+            for (let i = 0; i < 3; i++) {
+              const t = (Date.now() / 1000 + i * 0.3) % 1;
+              const px = towerIso.x + (targetIso.x - towerIso.x) * t;
+              const py = (towerIso.y - 50 + hover) + (targetIso.y - 10 - (towerIso.y - 50 + hover)) * t;
+              ctx.fillRect(px - 1, py - 1, 2, 2);
+            }
+            ctx.restore();
+          } else if (tower.type === 'chain') {
+            ctx.save();
+            ctx.strokeStyle = '#fde047';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(towerIso.x, towerIso.y - 35);
+            
+            // Lightning jitter
+            const segments = 5;
+            for (let i = 1; i <= segments; i++) {
+              const t = i / segments;
+              const jitterX = (Math.random() - 0.5) * 15;
+              const jitterY = (Math.random() - 0.5) * 15;
+              ctx.lineTo(
+                towerIso.x + (targetIso.x - towerIso.x) * t + jitterX,
+                (towerIso.y - 35) + (targetIso.y - 10 - (towerIso.y - 35)) * t + jitterY
+              );
+            }
+            ctx.stroke();
+            ctx.restore();
           }
         });
       }
     });
 
-    // Draw Nexus (Base)
-    const lastPoint = PATH[PATH.length - 1];
-    ctx.save();
-    ctx.translate(lastPoint.x, lastPoint.y);
-    
-    // Outer Glow
-    const gradient = ctx.createRadialGradient(0, 0, 5, 0, 0, 40);
-    gradient.addColorStop(0, 'rgba(239, 68, 68, 0.8)');
-    gradient.addColorStop(1, 'rgba(239, 68, 68, 0)');
-    ctx.fillStyle = gradient;
-    ctx.beginPath();
-    ctx.arc(0, 0, 40, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Hexagon Core
-    ctx.fillStyle = '#ef4444';
-    ctx.shadowBlur = 15;
-    ctx.shadowColor = '#ef4444';
-    ctx.beginPath();
-    for (let i = 0; i < 6; i++) {
-      const angle = (i * Math.PI) / 3;
-      const x = Math.cos(angle) * 25;
-      const y = Math.sin(angle) * 25;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.closePath();
-    ctx.fill();
-    
-    // Inner Detail
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    for (let i = 0; i < 6; i++) {
-      const angle = (i * Math.PI) / 3;
-      const x = Math.cos(angle) * 15;
-      const y = Math.sin(angle) * 15;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.closePath();
-    ctx.stroke();
-    
-    ctx.restore();
-    ctx.shadowBlur = 0;
-
-    // Draw Towers
+    // Draw Towers - Unique Isometric Designs
     gameState.towers.forEach(tower => {
       const stats = TOWER_TYPES[tower.type];
+      const iso = toIso(tower.x, tower.y);
       
-      // Range circle on hover or selection
-      if (mousePos && Math.sqrt(Math.pow(mousePos.x - tower.x, 2) + Math.pow(mousePos.y - tower.y, 2)) < 20) {
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+      // Range circle (on logical floor)
+      if (mousePos && Math.sqrt(Math.pow(mousePos.x - tower.x, 2) + Math.pow(mousePos.y - tower.y, 2)) < 25) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
         ctx.beginPath();
-        ctx.arc(tower.x, tower.y, tower.range, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([5, 5]);
+        ctx.ellipse(iso.x, iso.y, tower.range * 0.7, tower.range * 0.35, 0, 0, Math.PI * 2);
         ctx.stroke();
-        ctx.setLineDash([]);
+        ctx.restore();
       }
 
-      ctx.fillStyle = stats.color;
-      ctx.beginPath();
-      ctx.arc(tower.x, tower.y, 18, 0, Math.PI * 2);
-      ctx.fill();
-      
-      // Tower detail
-      ctx.fillStyle = '#0f172a';
-      ctx.beginPath();
-      ctx.arc(tower.x, tower.y, 10, 0, Math.PI * 2);
-      ctx.fill();
-      
-      // Weapon
-      ctx.strokeStyle = stats.color;
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(tower.x, tower.y);
-      const angle = Date.now() / 1000; // Just rotate for visual
-      ctx.lineTo(tower.x + Math.cos(angle) * 12, tower.y + Math.sin(angle) * 12);
-      ctx.stroke();
+      ctx.save();
+      ctx.lineWidth = 2;
+      ctx.lineJoin = 'round';
 
-      // Upgrade Indicator (Rank)
-      if (tower.level > 1) {
-        ctx.fillStyle = '#fbbf24';
-        ctx.font = 'bold 10px Inter';
-        ctx.textAlign = 'center';
-        ctx.fillText('★'.repeat(Math.min(3, tower.level - 1)), tower.x, tower.y + 30);
+      if (tower.type === 'sniper') {
+        const height = 50;
+        const width = 10;
         
-        // Glow for high level
-        if (tower.level > 3) {
-          ctx.strokeStyle = '#fbbf24';
-          ctx.lineWidth = 2;
+        // Tall thin base
+        ctx.fillStyle = '#1e293b';
+        ctx.strokeStyle = stats.color;
+        ctx.beginPath();
+        ctx.ellipse(iso.x, iso.y, width + 4, width/2 + 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(iso.x - width, iso.y);
+        ctx.lineTo(iso.x - width, iso.y - height);
+        ctx.lineTo(iso.x + width, iso.y - height);
+        ctx.lineTo(iso.x + width, iso.y);
+        ctx.fill();
+        ctx.stroke();
+
+        // Top platform
+        ctx.fillStyle = stats.color;
+        ctx.beginPath();
+        ctx.ellipse(iso.x, iso.y - height, width + 2, width/2 + 1, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Sniper Barrel
+        const target = tower.targetIds?.[0] ? gameState.enemies.find(e => e.id === tower.targetIds[0]) : null;
+        let angle = -Math.PI / 2;
+        if (target) {
+          const targetIso = toIso(target.x, target.y);
+          angle = Math.atan2(targetIso.y - (iso.y - height), targetIso.x - iso.x);
+        }
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(iso.x, iso.y - height);
+        ctx.lineTo(iso.x + Math.cos(angle) * 20, (iso.y - height) + Math.sin(angle) * 10);
+        ctx.stroke();
+
+      } else if (tower.type === 'cannon') {
+        const height = 20;
+        const width = 20;
+
+        ctx.fillStyle = '#334155';
+        ctx.strokeStyle = stats.color;
+        
+        // Heavy Base
+        ctx.beginPath();
+        ctx.ellipse(iso.x, iso.y, width + 4, width/2 + 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Rotating Cannon Body
+        const target = tower.targetIds?.[0] ? gameState.enemies.find(e => e.id === tower.targetIds[0]) : null;
+        let angle = -Math.PI / 2;
+        if (target) {
+          const targetIso = toIso(target.x, target.y);
+          angle = Math.atan2(targetIso.y - iso.y, targetIso.x - iso.x);
+        }
+
+        ctx.save();
+        ctx.translate(iso.x, iso.y - height/2);
+        ctx.rotate(angle);
+        
+        // Barrel
+        ctx.fillStyle = '#1e293b';
+        ctx.strokeStyle = '#94a3b8';
+        ctx.fillRect(0, -6, 25, 12);
+        ctx.strokeRect(0, -6, 25, 12);
+        
+        // Body Hub
+        ctx.beginPath();
+        ctx.arc(0, 0, 10, 0, Math.PI * 2);
+        ctx.fillStyle = stats.color;
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+
+      } else if (tower.type === 'laser') {
+        const height = 40;
+        const width = 12;
+
+        ctx.fillStyle = '#1e293b';
+        ctx.strokeStyle = stats.color;
+        
+        // Glassy column
+        ctx.beginPath();
+        ctx.moveTo(iso.x - width, iso.y);
+        ctx.lineTo(iso.x - width, iso.y - height);
+        ctx.lineTo(iso.x + width, iso.y - height);
+        ctx.lineTo(iso.x + width, iso.y);
+        ctx.fill();
+        ctx.stroke();
+
+        // Glowing Rings
+        ctx.strokeStyle = stats.color;
+        for (let i = 0; i < 3; i++) {
+          const yOff = (i * 10) + 10;
           ctx.beginPath();
-          ctx.arc(tower.x, tower.y, 22, 0, Math.PI * 2);
+          ctx.ellipse(iso.x, iso.y - yOff, width + 2, (width/2) + 1, 0, 0, Math.PI * 2);
           ctx.stroke();
         }
+
+        // Top Crystal
+        ctx.fillStyle = stats.color;
+        ctx.beginPath();
+        ctx.moveTo(iso.x, iso.y - height - 15);
+        ctx.lineTo(iso.x + 8, iso.y - height);
+        ctx.lineTo(iso.x, iso.y - height + 10);
+        ctx.lineTo(iso.x - 8, iso.y - height);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+      } else if (tower.type === 'frost') {
+        const height = 30;
+        ctx.fillStyle = '#1e293b';
+        ctx.strokeStyle = stats.color;
+        
+        // Wizard Spire
+        ctx.beginPath();
+        ctx.moveTo(iso.x - 15, iso.y);
+        ctx.lineTo(iso.x, iso.y - height - 10);
+        ctx.lineTo(iso.x + 15, iso.y);
+        ctx.fill();
+        ctx.stroke();
+
+        // Floating Frost Core
+        const hover = Math.sin(Date.now() / 300) * 5;
+        ctx.fillStyle = stats.color;
+        ctx.beginPath();
+        ctx.arc(iso.x, iso.y - height - 20 + hover, 8, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Aura
+        ctx.strokeStyle = 'rgba(96, 165, 250, 0.3)';
+        ctx.beginPath();
+        ctx.arc(iso.x, iso.y - height - 20 + hover, 12, 0, Math.PI * 2);
+        ctx.stroke();
+
+      } else if (tower.type === 'chain') { // Tesla
+        const height = 35;
+        ctx.fillStyle = '#334155';
+        ctx.strokeStyle = stats.color;
+        
+        // Metallic base
+        ctx.beginPath();
+        ctx.ellipse(iso.x, iso.y, 16, 8, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Coil Rings
+        ctx.lineWidth = 1.5;
+        for (let i = 0; i < 4; i++) {
+          const yPos = iso.y - (i * 8) - 5;
+          ctx.beginPath();
+          ctx.ellipse(iso.x, yPos, 12 - i*2, 6 - i, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        // Top Orb
+        ctx.fillStyle = stats.color;
+        ctx.beginPath();
+        ctx.arc(iso.x, iso.y - height, 10, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Spark effect if targeting
+        if (tower.targetIds && tower.targetIds.length > 0) {
+          ctx.strokeStyle = '#ffffff';
+          ctx.beginPath();
+          for (let i = 0; i < 3; i++) {
+            const ang = (Math.random() * Math.PI * 2);
+            const len = 10 + Math.random() * 10;
+            ctx.moveTo(iso.x, iso.y - height);
+            ctx.lineTo(iso.x + Math.cos(ang) * len, (iso.y - height) + Math.sin(ang) * len);
+          }
+          ctx.stroke();
+        }
+
+      } else {
+        // Archer Tower
+        const height = 40;
+        const width = 18;
+
+        // Main stone tower
+        ctx.fillStyle = '#475569';
+        ctx.strokeStyle = '#1e293b';
+        ctx.beginPath();
+        ctx.ellipse(iso.x, iso.y, width, width/2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(iso.x - width, iso.y);
+        ctx.lineTo(iso.x - width, iso.y - height);
+        ctx.lineTo(iso.x + width, iso.y - height);
+        ctx.lineTo(iso.x + width, iso.y);
+        ctx.fill();
+        ctx.stroke();
+
+        // Wooden battlement top
+        ctx.fillStyle = stats.color;
+        ctx.beginPath();
+        ctx.ellipse(iso.x, iso.y - height, width + 2, (width/2) + 1, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        
+        // Small roof
+        ctx.fillStyle = '#1e293b';
+        ctx.beginPath();
+        ctx.moveTo(iso.x - width - 2, iso.y - height);
+        ctx.lineTo(iso.x, iso.y - height - 15);
+        ctx.lineTo(iso.x + width + 2, iso.y - height);
+        ctx.fill();
       }
+
+      // Level indicator
+      if (tower.level > 1) {
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 9px Inter';
+        ctx.textAlign = 'center';
+        ctx.fillText(tower.level.toString(), iso.x, iso.y - 10);
+      }
+      ctx.restore();
     });
 
-    // Draw Enemies
+    // Draw Enemies - 3D Blobs
     gameState.enemies.forEach(enemy => {
       const stats = ENEMY_TYPES[enemy.type];
+      const iso = toIso(enemy.x, enemy.y);
       
-      // Glow
-      ctx.shadowBlur = 15;
-      ctx.shadowColor = stats.color;
-      
-      ctx.fillStyle = stats.color;
+      // Draw shadow
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
       ctx.beginPath();
-      ctx.arc(enemy.x, enemy.y, 12, 0, Math.PI * 2);
+      ctx.ellipse(iso.x, iso.y, 10, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Body (floating a bit)
+      ctx.fillStyle = stats.color;
+      const floatY = Math.sin(Date.now() / 200) * 3 - 10;
+      ctx.beginPath();
+      
+      if (enemy.type === 'fast') {
+        ctx.ellipse(iso.x, iso.y + floatY, 8, 12, 0, 0, Math.PI * 2);
+      } else if (enemy.type === 'tank') {
+        ctx.rect(iso.x - 10, iso.y + floatY - 10, 20, 15);
+      } else {
+        ctx.arc(iso.x, iso.y + floatY, 10, 0, Math.PI * 2);
+      }
       ctx.fill();
       
-      // Boss Horns
+      // Boss Detail
       if (enemy.type === 'boss') {
-        ctx.fillStyle = '#ef4444';
-        // Left Horn
-        ctx.beginPath();
-        ctx.moveTo(enemy.x - 8, enemy.y - 8);
-        ctx.lineTo(enemy.x - 15, enemy.y - 20);
-        ctx.lineTo(enemy.x - 2, enemy.y - 12);
-        ctx.fill();
-        // Right Horn
-        ctx.beginPath();
-        ctx.moveTo(enemy.x + 8, enemy.y - 8);
-        ctx.lineTo(enemy.x + 15, enemy.y - 20);
-        ctx.lineTo(enemy.x + 2, enemy.y - 12);
-        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
       }
-      
-      ctx.shadowBlur = 0;
 
       // Health bar
       const barWidth = 24;
       const healthPercent = enemy.health / enemy.maxHealth;
-      ctx.fillStyle = '#1e293b';
-      ctx.fillRect(enemy.x - barWidth / 2, enemy.y - 20, barWidth, 4);
-      ctx.fillStyle = healthPercent > 0.5 ? '#22c55e' : healthPercent > 0.2 ? '#eab308' : '#ef4444';
-      ctx.fillRect(enemy.x - barWidth / 2, enemy.y - 20, barWidth * healthPercent, 4);
-
-      // Health Number
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 10px Inter';
-      ctx.textAlign = 'center';
-      ctx.fillText(Math.ceil(enemy.health).toString(), enemy.x, enemy.y - 25);
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(iso.x - barWidth / 2, iso.y + floatY - 20, barWidth, 3);
+      ctx.fillStyle = '#22c55e';
+      ctx.fillRect(iso.x - barWidth / 2, iso.y + floatY - 20, barWidth * healthPercent, 3);
     });
 
     // Draw Projectiles
     gameState.projectiles.forEach(proj => {
+      const iso = toIso(proj.x, proj.y);
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
-      ctx.arc(proj.x, proj.y, 3, 0, Math.PI * 2);
+      ctx.arc(iso.x, iso.y - 15, 3, 0, Math.PI * 2); // Flying height
       ctx.fill();
-      
-      // Trail
-      ctx.shadowBlur = 10;
-      ctx.shadowColor = '#ffffff';
-      ctx.fill();
-      ctx.shadowBlur = 0;
     });
 
     // Draw Placement Ghost
     if (selectedTowerType && mousePos) {
       const stats = TOWER_TYPES[selectedTowerType];
+      const iso = toIso(mousePos.x, mousePos.y);
       
-      // Check if too close to path
+      // Check collision (using logical space logic)
       const isNearPath = PATH.some((p, i) => {
         if (i === PATH.length - 1) return false;
         const p1 = p;
@@ -707,7 +933,7 @@ export default function App() {
         let t = ((mousePos.x - p1.x) * (p2.x - p1.x) + (mousePos.y - p1.y) * (p2.y - p1.y)) / l2;
         t = Math.max(0, Math.min(1, t));
         const dist = Math.sqrt(Math.pow(mousePos.x - (p1.x + t * (p2.x - p1.x)), 2) + Math.pow(mousePos.y - (p1.y + t * (p2.y - p1.y)), 2));
-        return dist < 35;
+        return dist < 40;
       });
 
       const isNearTower = gameState.towers.some(t => {
@@ -716,34 +942,56 @@ export default function App() {
 
       const canPlace = gameState.money >= stats.cost && !isNearPath && !isNearTower;
       
-      // Draw placement shadow and range
       ctx.save();
-      ctx.fillStyle = canPlace ? 'rgba(74, 222, 128, 0.15)' : 'rgba(239, 68, 68, 0.15)';
+      // Range indicator
+      ctx.beginPath();
+      ctx.ellipse(iso.x, iso.y, stats.range * 0.7, stats.range * 0.35, 0, 0, Math.PI * 2);
+      ctx.fillStyle = canPlace ? 'rgba(74, 222, 128, 0.1)' : 'rgba(239, 68, 68, 0.1)';
+      ctx.fill();
       ctx.strokeStyle = canPlace ? '#4ade80' : '#ef4444';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([6, 4]);
-      ctx.beginPath();
-      ctx.arc(mousePos.x, mousePos.y, stats.range, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      
-      // Draw tower footprint helper
-      ctx.setLineDash([]);
       ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(mousePos.x, mousePos.y, 20, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.restore();
 
+      // Ghost Tower
+      ctx.globalAlpha = 0.4;
       ctx.fillStyle = stats.color;
-      ctx.globalAlpha = canPlace ? 0.6 : 0.2;
+      ctx.strokeStyle = canPlace ? stats.color : '#ef4444';
+      ctx.lineWidth = 2;
+
+      let h = 35;
+      let w = 16;
+      if (selectedTowerType === 'sniper') { h = 50; w = 10; }
+      else if (selectedTowerType === 'cannon') { h = 20; w = 20; }
+      else if (selectedTowerType === 'laser') { h = 40; w = 12; }
+      else if (selectedTowerType === 'archer') { h = 40; w = 18; }
+      else if (selectedTowerType === 'frost') { h = 30; w = 15; }
+      else if (selectedTowerType === 'chain') { h = 35; w = 16; }
+
+      // Base
       ctx.beginPath();
-      ctx.arc(mousePos.x, mousePos.y, 15, 0, Math.PI * 2);
+      ctx.ellipse(iso.x, iso.y, w, w/2, 0, 0, Math.PI * 2);
       ctx.fill();
-      ctx.globalAlpha = 1.0;
+      ctx.stroke();
+
+      // Body
+      ctx.beginPath();
+      ctx.moveTo(iso.x - w, iso.y);
+      ctx.lineTo(iso.x - w, iso.y - h);
+      ctx.lineTo(iso.x + w, iso.y - h);
+      ctx.lineTo(iso.x + w, iso.y);
+      ctx.fill();
+      ctx.stroke();
+
+      // Top
+      ctx.beginPath();
+      ctx.ellipse(iso.x, iso.y - h, w, w/2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.restore();
     }
 
-  }, [gameState, mousePos, selectedTowerType, selectedTowerId]);
+  }, [gameState, mousePos, selectedTowerType, selectedTowerId, rotation, toIso]);
 
   const sellTower = (towerId: string) => {
     setGameState(prev => {
@@ -788,11 +1036,23 @@ export default function App() {
   };
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!mousePos) return;
+    // Don't place towers if we were just rotating or is currently rotating
+    if (isRotating || didRotate) return;
+    
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
 
-    // Check if clicking an existing tower
+    const scaleX = CANVAS_WIDTH / rect.width;
+    const scaleY = CANVAS_HEIGHT / rect.height;
+    const clickedIsoX = (e.clientX - rect.left) * scaleX;
+    const clickedIsoY = (e.clientY - rect.top) * scaleY;
+
+    // Convert clicked isometric coordinates back to logical x,y
+    const logicalPos = fromIso(clickedIsoX, clickedIsoY);
+
+    // Check if clicking an existing tower in logical space
     const clickedTower = gameState.towers.find(t => {
-      return Math.sqrt(Math.pow(mousePos.x - t.x, 2) + Math.pow(mousePos.y - t.y, 2)) < 20;
+      return Math.sqrt(Math.pow(logicalPos.x - t.x, 2) + Math.pow(logicalPos.y - t.y, 2)) < 30;
     });
 
     if (clickedTower) {
@@ -809,26 +1069,24 @@ export default function App() {
     const stats = TOWER_TYPES[selectedTowerType];
     if (gameState.money < stats.cost) return;
 
-    // Check if too close to path
+    // Check if too close to path in logical space
     const isNearPath = PATH.some((p, i) => {
       if (i === PATH.length - 1) return false;
       const p1 = p;
       const p2 = PATH[i + 1];
       
-      // Distance from point to line segment
       const l2 = Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2);
-      if (l2 === 0) return Math.sqrt(Math.pow(mousePos.x - p1.x, 2) + Math.pow(mousePos.y - p1.y, 2)) < 30;
-      let t = ((mousePos.x - p1.x) * (p2.x - p1.x) + (mousePos.y - p1.y) * (p2.y - p1.y)) / l2;
+      if (l2 === 0) return Math.sqrt(Math.pow(logicalPos.x - p1.x, 2) + Math.pow(logicalPos.y - p1.y, 2)) < 30;
+      let t = ((logicalPos.x - p1.x) * (p2.x - p1.x) + (logicalPos.y - p1.y) * (p2.y - p1.y)) / l2;
       t = Math.max(0, Math.min(1, t));
-      const dist = Math.sqrt(Math.pow(mousePos.x - (p1.x + t * (p2.x - p1.x)), 2) + Math.pow(mousePos.y - (p1.y + t * (p2.y - p1.y)), 2));
+      const dist = Math.sqrt(Math.pow(logicalPos.x - (p1.x + t * (p2.x - p1.x)), 2) + Math.pow(logicalPos.y - (p1.y + t * (p2.y - p1.y)), 2));
       return dist < 35;
     });
 
     if (isNearPath) return;
 
-    // Check if too close to other towers
     const isNearTower = gameState.towers.some(t => {
-      return Math.sqrt(Math.pow(mousePos.x - t.x, 2) + Math.pow(mousePos.y - t.y, 2)) < 30;
+      return Math.sqrt(Math.pow(logicalPos.x - t.x, 2) + Math.pow(logicalPos.y - t.y, 2)) < 30;
     });
 
     if (isNearTower) return;
@@ -836,8 +1094,8 @@ export default function App() {
     const newTower: Tower = {
       id: Math.random().toString(36).substr(2, 9),
       type: selectedTowerType,
-      x: mousePos.x,
-      y: mousePos.y,
+      x: logicalPos.x,
+      y: logicalPos.y,
       range: stats.range,
       damage: stats.damage,
       fireRate: stats.fireRate,
@@ -861,14 +1119,33 @@ export default function App() {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     
-    // Calculate scale factors in case the canvas is CSS-scaled
     const scaleX = CANVAS_WIDTH / rect.width;
     const scaleY = CANVAS_HEIGHT / rect.height;
 
-    setMousePos({
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY,
-    });
+    const isoX = (e.clientX - rect.left) * scaleX;
+    const isoY = (e.clientY - rect.top) * scaleY;
+
+    // Store mouse position in logical x,y
+    setMousePos(fromIso(isoX, isoY));
+
+    // Rotation dragging
+    if (isRotating && lastMousePos) {
+      const dx = e.clientX - lastMousePos.x;
+      if (Math.abs(dx) > 1) setDidRotate(true);
+      // Sensitivity factor
+      const sensitivity = 0.5;
+      setRotation(prev => prev + dx * sensitivity);
+      setLastMousePos({ x: e.clientX, y: e.clientY });
+    }
+  };
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    // Start rotating on right click (button 2) or Shift + Left click
+    if (e.button === 2 || (e.button === 0 && e.shiftKey)) {
+      setIsRotating(true);
+      setLastMousePos({ x: e.clientX, y: e.clientY });
+      e.preventDefault();
+    }
   };
 
   const resetGame = () => {
@@ -957,7 +1234,7 @@ export default function App() {
       </AnimatePresence>
 
       {/* Sidebar Shop */}
-      <div className="w-80 h-full bg-slate-900/80 backdrop-blur-xl border-r border-slate-800 flex flex-col p-6 z-50">
+      <div className="w-72 h-full bg-slate-900/80 backdrop-blur-xl border-r border-slate-800 flex flex-col p-5 z-50">
         <div className="flex items-center gap-3 mb-8">
           <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/20">
             <Shield className="w-6 h-6 text-white" />
@@ -1115,8 +1392,8 @@ export default function App() {
       </div>
 
       {/* Game Viewport */}
-      <div className="flex-1 relative flex flex-col items-center justify-center p-4 overflow-hidden">
-        <div className="absolute top-6 left-6 right-6 flex items-center justify-between z-40">
+      <div className="flex-1 relative flex flex-col items-center justify-center overflow-hidden bg-slate-950">
+        <div className="absolute top-4 left-4 right-4 flex items-center justify-between z-40">
           <div className="px-5 py-2 bg-slate-900/80 backdrop-blur-md rounded-2xl border border-slate-800 flex items-center gap-4">
             <div className="flex flex-col">
               <span className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Round</span>
@@ -1131,6 +1408,20 @@ export default function App() {
 
           <div className="flex gap-2">
             <button 
+              onClick={() => setRotation(prev => prev - 45)}
+              className="w-10 h-10 bg-slate-900/80 backdrop-blur-md rounded-2xl border border-slate-800 flex items-center justify-center hover:bg-slate-800 transition-colors"
+              title="Rotate View Left"
+            >
+              <RotateCcw className="w-5 h-5 text-white" />
+            </button>
+            <button 
+              onClick={() => setRotation(prev => prev + 45)}
+              className="w-10 h-10 bg-slate-900/80 backdrop-blur-md rounded-2xl border border-slate-800 flex items-center justify-center hover:bg-slate-800 transition-colors"
+              title="Rotate View Right"
+            >
+              <RotateCw className="w-5 h-5 text-white" />
+            </button>
+            <button 
               onClick={() => setIsPaused(!isPaused)}
               className="w-10 h-10 bg-slate-900/80 backdrop-blur-md rounded-2xl border border-slate-800 flex items-center justify-center hover:bg-slate-800 transition-colors"
             >
@@ -1139,20 +1430,23 @@ export default function App() {
             <button 
               onClick={resetGame}
               className="w-10 h-10 bg-slate-900/80 backdrop-blur-md rounded-2xl border border-slate-800 flex items-center justify-center hover:bg-slate-800 transition-colors"
+              title="Reset Game"
             >
               <RotateCcw className="w-5 h-5 text-white" />
             </button>
           </div>
         </div>
 
-        <div className="relative w-full h-full flex items-center justify-center px-4 pt-16 pb-4">
+        <div className="relative w-full h-full flex items-center justify-center p-2">
           <canvas
             ref={canvasRef}
             width={CANVAS_WIDTH}
             height={CANVAS_HEIGHT}
+            onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onClick={handleCanvasClick}
             onMouseLeave={() => setMousePos(null)}
+            onContextMenu={(e) => e.preventDefault()}
             className="max-w-full max-h-full object-contain bg-[#0f172a] rounded-[2rem] shadow-[0_0_100px_rgba(0,0,0,0.5)] border-8 border-slate-900 cursor-crosshair"
           />
 

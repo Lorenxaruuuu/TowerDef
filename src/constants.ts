@@ -1,8 +1,8 @@
 import { Point } from './types';
 
-export const CANVAS_WIDTH = 1000;
-export const CANVAS_HEIGHT = 750;
-export const GRID_SIZE = 40;
+export const CANVAS_WIDTH = 1200;
+export const CANVAS_HEIGHT = 800;
+export const GRID_SIZE = 50;
 
 export interface MapData {
   id: string;
